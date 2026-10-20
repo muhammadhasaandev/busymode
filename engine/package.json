@@ -1,0 +1,16 @@
+{
+  "name": "busymode-engine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp + Groq engine that runs inside the Busy Mode Android app (nodejs-mobile, Node 18)",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc14"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

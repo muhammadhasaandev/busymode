@@ -1,0 +1,16 @@
+<resources>
+    <color name="ink">#1F2A37</color>
+    <color name="brand">#3B4FD8</color>
+    <color name="brand_dark">#AEB9FF</color>
+    <color name="brand_container">#E3E7FF</color>
+    <color name="brand_container_dark">#2A3480</color>
+    <color name="ok">#1E9E62</color>
+    <color name="warn">#D98A00</color>
+    <color name="bad">#C8423B</color>
+    <color name="muted">#7A8594</color>
+    <color name="icon_bg">#3B4FD8</color>
+    <color name="act_replied">#1E9E62</color>
+    <color name="act_announced">#D25B1F</color>
+    <color name="act_ignored">#7A8594</color>
+    <color name="act_noted">#3B4FD8</color>
+</resources>

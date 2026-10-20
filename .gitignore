@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+engine/node_modules/
+app/src/main/jniLibs/
+app/src/main/assets/nodejs-project/
+.cxx/
+*.keystore
+*.jks
+secrets.properties

@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.BusyMode" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand_dark</item>
+        <item name="colorOnPrimary">#0D1660</item>
+        <item name="colorPrimaryContainer">@color/brand_container_dark</item>
+        <item name="colorOnPrimaryContainer">#E3E7FF</item>
+        <item name="colorSecondary">@color/brand_dark</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">?attr/colorSurfaceContainer</item>
+    </style>
+</resources>
