@@ -9,6 +9,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         LogStore.init(this)
+        ApprovalStore.init(this)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
@@ -19,11 +20,15 @@ class App : Application() {
             nm.createNotificationChannel(
                 NotificationChannel(CH_ALERTS, getString(R.string.ch_alerts), NotificationManager.IMPORTANCE_HIGH)
             )
+            nm.createNotificationChannel(
+                NotificationChannel(CH_APPROVALS, getString(R.string.ch_approvals), NotificationManager.IMPORTANCE_HIGH)
+            )
         }
     }
 
     companion object {
         const val CH_SERVICE = "service"
         const val CH_ALERTS = "alerts"
+        const val CH_APPROVALS = "approvals"
     }
 }

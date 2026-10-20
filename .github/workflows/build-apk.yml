@@ -19,12 +19,37 @@ jobs:
         with:
           node-version: 20
 
-      # Reuse the same signing key on every build so new versions install over old ones.
-      - name: Keep signing key between builds
-        uses: actions/cache@v4
+      # Sign every build with the same key so new versions install over old ones.
+      # The key never goes into the repository; it lives in the build cache.
+      - name: Restore previous signing key (version 1.2)
+        uses: actions/cache/restore@v4
         with:
           path: ~/.android/debug.keystore
           key: busymode-signing-key-v1
+
+      - name: Restore stable signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/busymode-signing
+          key: busymode-stable-key-v2
+
+      - name: Prepare signing key
+        run: |
+          mkdir -p ~/busymode-signing
+          if [ ! -f ~/busymode-signing/key.jks ]; then
+            if [ -f ~/.android/debug.keystore ]; then
+              cp ~/.android/debug.keystore ~/busymode-signing/key.jks
+              echo androiddebugkey > ~/busymode-signing/alias
+              echo "Reusing the version 1.2 signing key"
+            else
+              keytool -genkeypair -keystore ~/busymode-signing/key.jks -storepass android -keypass android \
+                -alias busymode -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Busy Mode"
+              echo busymode > ~/busymode-signing/alias
+              echo "Created a new signing key"
+            fi
+          fi
+          echo "BUSYMODE_KEYSTORE=$HOME/busymode-signing/key.jks" >> "$GITHUB_ENV"
+          echo "BUSYMODE_KEY_ALIAS=$(cat ~/busymode-signing/alias)" >> "$GITHUB_ENV"
 
       - name: Prepare Node.js runtime and engine
         run: ./scripts/prepare.sh

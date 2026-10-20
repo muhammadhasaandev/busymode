@@ -2,6 +2,8 @@
     <string name="app_name">Busy Mode</string>
     <string name="ch_service">Running in background</string>
     <string name="ch_alerts">Important message alerts</string>
+    <string name="ch_approvals">Reply suggestions to approve</string>
+    <string name="tab_replies">Replies</string>
     <string name="turn_off">Turn off</string>
     <string name="tab_home">Home</string>
     <string name="tab_log">Activity</string>

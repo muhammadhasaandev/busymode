@@ -11,8 +11,8 @@ android {
         applicationId = "com.hasaan.busymode"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
             cmake {
@@ -23,13 +23,27 @@ android {
         }
     }
 
+    signingConfigs {
+        create("stable") {
+            val ks = System.getenv("BUSYMODE_KEYSTORE")
+            if (ks != null && file(ks).exists()) {
+                storeFile = file(ks)
+                storePassword = System.getenv("BUSYMODE_KEYSTORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("BUSYMODE_KEY_ALIAS") ?: "busymode"
+                keyPassword = System.getenv("BUSYMODE_KEYSTORE_PASSWORD") ?: "android"
+            } else {
+                initWith(getByName("debug"))
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signed with the build machine's standard Android test key so it installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("stable")
         }
     }
 
@@ -68,4 +82,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+    // Offline wake-word detection ("Assistant")
+    implementation("com.alphacephei:vosk-android:0.3.47@aar")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 }

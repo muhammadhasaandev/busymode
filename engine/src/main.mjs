@@ -10,6 +10,10 @@ import './polyfills.mjs'
 import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import { createGroq, parseJsonObject } from './groq.mjs'
+import { createStore } from './store.mjs'
+import { createAgent, normalizeNumber } from './agent.mjs'
 
 const [, , PORT_ARG, TOKEN, DATA_DIR_ARG] = process.argv
 const PORT = Number(PORT_ARG)
@@ -74,19 +78,27 @@ const {
 const config = {
   groqKey: '',
   model: 'openai/gpt-oss-20b',
+  agentModel: 'openai/gpt-oss-120b',
   ownerName: 'Hasaan',
   replyText: 'Hasaan is busy right now, he will get back to you soon.',
+  replyMode: 'suggest', // suggest | auto | off
   autoReply: true,
   voiceAlerts: true,
   ignoreList: [],
   importantList: [],
-  replyCooldownMin: 60
+  replyCooldownMin: 60,
+  countryCode: '92',
+  tzOffsetMin: 300
 }
+let phoneContacts = [] // [{ n: name, p: number }] from the Android address book
 
 function handleCommand (cmd) {
   switch (cmd.t) {
     case 'config':
       Object.assign(config, cmd.config || {})
+      break
+    case 'contacts':
+      if (Array.isArray(cmd.list)) phoneContacts = cmd.list.filter((c) => c && c.n && c.p)
       break
     case 'start':
       wanted = true
@@ -106,8 +118,19 @@ function handleCommand (cmd) {
     case 'status':
       send({ t: 'status', ...currentStatus() })
       break
+    case 'approve':
+      approveReply(cmd).catch((e) => send({ t: 'error', message: 'Could not send the reply: ' + e.message }))
+      break
+    case 'reject':
+      finishApproval(String(cmd.id), 'skipped')
+      break
+    case 'voice':
+      agent.handle(cmd.session, String(cmd.text || ''))
+        .then((r) => send({ t: 'say', session: cmd.session, text: r.text, listen: !!r.listen }))
+        .catch((e) => { log('Voice failed: ' + e.message); send({ t: 'say', session: cmd.session, text: 'Sorry, something went wrong.', listen: false }) })
+      break
     case 'test_message': // used only by the automated tests on a computer
-      if (process.env.BUSYMODE_TEST === '1') onMessage(cmd.message).catch((e) => log('test failed: ' + e.message))
+      if (process.env.BUSYMODE_TEST === '1') handleUpsert([cmd.message], 'notify')
       break
   }
 }
@@ -214,12 +237,7 @@ async function startWhatsApp () {
     }
   })
 
-  s.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return
-    for (const m of messages) {
-      onMessage(m).catch((e) => log('Message handling failed: ' + e.message))
-    }
-  })
+  s.ev.on('messages.upsert', ({ messages, type }) => handleUpsert(messages, type))
 }
 
 function stopWhatsApp () {
@@ -324,25 +342,101 @@ function isMe (jid) { return !!jid && myIds.some((m) => areJidsSameUser(m, jid))
 
 const lastReplyAt = new Map() // chat jid -> ms
 const pending = new Map() // chat jid -> { timer, items: [] }
+const chatNames = new Map() // private chat jid -> best known name
 
-async function onMessage (m) {
+// ---------------------------------------------------------------- shared services
+const store = createStore(DATA_DIR)
+const groq = createGroq({ getKey: () => config.groqKey, log })
+const approvals = new Map() // id -> approval item
+
+const wa = {
+  connected: () => !!sock && state === 'connected',
+  sendText: (jid, text) => sock.sendMessage(jid, { text }),
+  async onWhatsApp (numbers) {
+    const out = new Map()
+    const res = await sock.onWhatsApp(...numbers.map((n) => n + '@s.whatsapp.net'))
+    for (const r of res || []) {
+      const num = String(r.jid || '').split('@')[0].split(':')[0]
+      out.set(num, { exists: !!r.exists, jid: r.jid })
+    }
+    for (const n of numbers) if (!out.has(n)) out.set(n, { exists: false, jid: null })
+    return out
+  }
+}
+
+if (process.env.BUSYMODE_TEST === '1') { // automated tests on a computer: pretend WhatsApp is connected
+  wa.connected = () => true
+  wa.sendText = async (jid, text) => send({ t: 'test_sent', jid, text })
+  wa.onWhatsApp = async (nums) => new Map(nums.map((n) => [n, { exists: !n.endsWith('0000'), jid: n + '@s.whatsapp.net' }]))
+}
+
+const agent = createAgent({
+  groq, store, wa, config, log,
+  getContacts: () => phoneContacts,
+  getApprovals: () => [...approvals.values()]
+})
+
+function contactNameFor (number) {
+  if (!number) return null
+  const tail = number.slice(-10)
+  for (const c of phoneContacts) {
+    const n = normalizeNumber(c.p, config.countryCode)
+    if (n && n.slice(-10) === tail) return c.n
+  }
+  return null
+}
+
+// ---------------------------------------------------------------- incoming / outgoing messages
+async function toRecord (m) {
   const jid = m.key?.remoteJid
-  if (!jid || m.key.fromMe) return
-  if (isJidStatusBroadcast(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)) return
+  if (!jid) return null
+  if (isJidStatusBroadcast(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)) return null
   const content = normalizeMessageContent(m.message)
   const text = textOf(content)
-  if (text === null || text === '') return
-  const ts = Number(m.messageTimestamp || 0) * 1000
-  if (ts && Date.now() - ts > 10 * 60 * 1000) return // old message delivered after reconnect
-
+  if (text === null || text === '') return null
   const isGroup = isJidGroup(jid)
+  const fromMe = !!m.key.fromMe
   const candidates = isGroup ? [m.key.participant, m.key.participantAlt] : [jid, m.key.remoteJidAlt]
   const pnJid = candidates.find((j) => j && j.endsWith('@s.whatsapp.net'))
-  const senderNumber = pnJid ? digits(pnJid.split('@')[0].split(':')[0]) : ''
-  const senderName = m.pushName || (senderNumber ? '+' + senderNumber : 'someone')
-  const chatName = isGroup ? await groupName(jid) : senderName
+  const number = pnJid ? digits(pnJid.split('@')[0].split(':')[0]) : ''
+  const savedName = contactNameFor(number)
+  let sender = fromMe ? 'You' : (savedName || m.pushName || (number ? '+' + number : 'someone'))
+  let chatName
+  if (isGroup) {
+    chatName = await groupName(jid)
+  } else {
+    if (!fromMe) {
+      const best = savedName || m.pushName
+      if (best) { chatNames.set(jid, best); if (m.key.remoteJidAlt) chatNames.set(m.key.remoteJidAlt, best) }
+    }
+    chatName = chatNames.get(jid) || savedName || (number ? '+' + number : sender)
+  }
+  if (!fromMe && !isGroup) sender = chatName
+  const ts = Number(m.messageTimestamp || 0) * 1000 || Date.now()
+  return { id: m.key.id || crypto.randomUUID(), chatJid: jid, chatName, isGroup, sender, fromMe, number: fromMe ? '' : number, text: text.slice(0, 1000), time: ts, content }
+}
 
-  const base = { time: Date.now(), chatJid: jid, chatName, sender: senderName, isGroup, text: text.slice(0, 500) }
+function handleUpsert (messages, type) {
+  for (const m of messages) {
+    (async () => {
+      const rec = await toRecord(m)
+      if (!rec) return
+      const { content, ...plain } = rec
+      store.add(plain)
+      if (rec.fromMe) {
+        // You answered this chat yourself: the waiting suggestions are no longer needed.
+        for (const a of approvals.values()) if (a.chatJid === rec.chatJid && Date.now() - rec.time < 60000 && !a.sending) finishApproval(a.id, 'answered')
+        return
+      }
+      if (type === 'notify') await onMessage(rec, content)
+    })().catch((e) => log('Message handling failed: ' + e.message))
+  }
+}
+
+async function onMessage (rec, content) {
+  if (Date.now() - rec.time > 10 * 60 * 1000) return // old message delivered after reconnect
+  const { chatJid: jid, chatName, sender: senderName, isGroup, number: senderNumber } = rec
+  const base = { time: Date.now(), chatJid: jid, chatName, sender: senderName, isGroup, text: rec.text.slice(0, 500) }
 
   if (inList(config.ignoreList, chatName, senderName, senderNumber)) {
     return record({ ...base, action: 'ignored', reason: 'On your "always ignore" list' })
@@ -352,28 +446,27 @@ async function onMessage (m) {
     const ctx = contextOf(content)
     const tagged = (ctx?.mentionedJid || []).some(isMe)
     const repliedToMe = isMe(ctx?.participant)
-    const named = mentionsOwnerByName(text)
-    if (tagged || repliedToMe || named) {
-      const why = tagged ? 'You were tagged' : repliedToMe ? 'Someone replied to your message' : 'Your name was mentioned'
-      announce(`${firstName()}, someone is talking about you in ${chatName}, please check.`)
-      return record({ ...base, action: 'announced', reason: why })
-    }
-    if (inList(config.importantList, chatName, senderName, senderNumber)) {
-      announce(`${firstName()}, you have an important message in ${chatName} from ${senderName}.`)
-      return record({ ...base, action: 'announced', reason: 'On your "always important" list' })
+    const named = mentionsOwnerByName(rec.text)
+    const important = inList(config.importantList, chatName, senderName, senderNumber)
+    if (tagged || repliedToMe || named || important) {
+      const why = tagged ? 'You were tagged' : repliedToMe ? 'Someone replied to your message' : named ? 'Your name was mentioned' : 'On your "always important" list'
+      announce(important && !(tagged || repliedToMe || named)
+        ? `${firstName()}, you have an important message in ${chatName} from ${senderName}.`
+        : `${firstName()}, someone is talking about you in ${chatName}, please check.`)
+      record({ ...base, action: 'announced', reason: why })
+      if (config.replyMode === 'suggest') {
+        const v = await triage({ sender: senderName, chatName, isGroup: true, text: rec.text, jid, wantReplies: true })
+        if (v.replies.length) createApproval({ ...base, suggestions: v.replies, reason: why })
+      }
+      return
     }
     return record({ ...base, action: 'ignored', reason: 'Group message not about you' }, true)
-  }
-
-  if (inList(config.importantList, chatName, senderName, senderNumber)) {
-    announce(`${firstName()}, you have an important message from ${senderName}.`)
-    return record({ ...base, action: 'announced', reason: 'On your "always important" list' })
   }
 
   // Private chat: wait a few seconds so a burst of messages is judged together.
   let p = pending.get(jid)
   if (!p) { p = { items: [] }; pending.set(jid, p) }
-  p.items.push(base)
+  p.items.push({ ...base, number: senderNumber })
   clearTimeout(p.timer)
   p.timer = setTimeout(() => {
     pending.delete(jid)
@@ -384,26 +477,70 @@ async function onMessage (m) {
 async function decidePrivate (jid, items) {
   const last = items[items.length - 1]
   const combined = items.map((i) => i.text).join('\n')
-  const verdict = await classify(last.sender, combined)
-  const entry = { ...last, text: combined.slice(0, 500), reason: verdict.reason }
+  const entry = { ...last, text: combined.slice(0, 500) }
+  delete entry.number
+  const alwaysImportant = inList(config.importantList, last.chatName, last.sender, last.number)
+  const suggest = config.replyMode === 'suggest'
+  const v = await triage({ sender: last.sender, chatName: last.chatName, isGroup: false, text: combined, jid, wantReplies: suggest })
+  const category = alwaysImportant ? 'important' : v.category
+  const reason = alwaysImportant ? 'On your "always important" list' : v.reason
 
-  if (verdict.category === 'important') {
-    announce(`${firstName()}, you have an important message from ${last.sender}.`)
-    return record({ ...entry, action: config.voiceAlerts ? 'announced' : 'noted' })
-  }
-  if (verdict.category === 'casual') {
-    if (!config.autoReply) return record({ ...entry, action: 'noted', reason: verdict.reason + ' (auto-reply is off)' })
-    const prev = lastReplyAt.get(jid) || 0
-    const cooldown = Math.max(0, Number(config.replyCooldownMin) || 0) * 60 * 1000
-    if (Date.now() - prev < cooldown) {
-      return record({ ...entry, action: 'noted', reason: 'Already auto-replied to this chat recently' })
+  if (category === 'important') announce(`${firstName()}, you have an important message from ${last.sender}.`)
+
+  if (category === 'ignore') return record({ ...entry, action: 'ignored', reason })
+
+  if (suggest) {
+    if (v.replies.length) {
+      createApproval({ ...entry, suggestions: v.replies, reason })
+      return record({ ...entry, action: category === 'important' && config.voiceAlerts ? 'announced' : 'suggested', reason: reason + ' — replies waiting for your approval' })
     }
-    if (!sock || state !== 'connected') return record({ ...entry, action: 'noted', reason: 'Not connected, could not reply' })
-    await sock.sendMessage(jid, { text: config.replyText })
-    lastReplyAt.set(jid, Date.now())
-    return record({ ...entry, action: 'auto_replied' })
+    return record({ ...entry, action: category === 'important' && config.voiceAlerts ? 'announced' : 'noted', reason })
   }
-  return record({ ...entry, action: 'ignored' })
+
+  if (category === 'important') return record({ ...entry, action: config.voiceAlerts ? 'announced' : 'noted', reason })
+
+  // casual
+  if (config.replyMode !== 'auto') return record({ ...entry, action: 'noted', reason: reason + ' (replies are off)' })
+  const prev = lastReplyAt.get(jid) || 0
+  const cooldown = Math.max(0, Number(config.replyCooldownMin) || 0) * 60 * 1000
+  if (Date.now() - prev < cooldown) return record({ ...entry, action: 'noted', reason: 'Already auto-replied to this chat recently' })
+  if (!wa.connected()) return record({ ...entry, action: 'noted', reason: 'Not connected, could not reply' })
+  await wa.sendText(jid, config.replyText)
+  lastReplyAt.set(jid, Date.now())
+  return record({ ...entry, action: 'auto_replied', reason })
+}
+
+// ---------------------------------------------------------------- reply approvals
+function createApproval ({ chatJid, chatName, sender, isGroup, text, suggestions, reason }) {
+  for (const a of approvals.values()) if (a.chatJid === chatJid) finishApproval(a.id, 'replaced')
+  const item = {
+    id: crypto.randomUUID(),
+    chatJid, chatName, sender, isGroup,
+    text: String(text).slice(0, 600),
+    suggestions: suggestions.slice(0, 3),
+    reason: reason || '',
+    time: Date.now()
+  }
+  approvals.set(item.id, item)
+  send({ t: 'approval', item })
+}
+
+function finishApproval (id, status) {
+  approvals.delete(id)
+  send({ t: 'approval_done', id, status })
+}
+
+async function approveReply ({ id, chatJid, text, chatName }) {
+  const a = approvals.get(String(id))
+  const jid = a?.chatJid || chatJid
+  const body = String(text || '').trim()
+  if (!jid || !body) return
+  if (!wa.connected()) { send({ t: 'error', message: 'WhatsApp is not connected right now. The reply was not sent; try again in a moment.' }); return }
+  if (a) a.sending = true
+  await wa.sendText(jid, body)
+  lastReplyAt.set(jid, Date.now())
+  finishApproval(String(id), 'sent')
+  record({ time: Date.now(), chatJid: jid, chatName: a?.chatName || chatName || '', sender: 'You', isGroup: !!a?.isGroup, text: body, action: 'replied', reason: 'You approved this reply' })
 }
 
 function announce (text) {
@@ -414,59 +551,51 @@ function record (entry, quiet = false) {
   send({ t: 'event', entry: { ...entry, quiet } })
 }
 
-// ---------------------------------------------------------------- Groq
-const SYSTEM_PROMPT = (name) => `You triage incoming WhatsApp private messages for ${name}, who is busy.
-Classify the message(s) into exactly one category:
-- "important": urgent or time-sensitive, emergencies, health/safety, money or work matters needing a quick answer, someone asking ${name} to call back urgently, family emergencies, deadlines, anything that would be bad to leave unanswered for hours.
-- "casual": greetings, small talk, simple questions, chit-chat, "how are you", "are you free", forwarded jokes, things that can wait — a polite "he is busy" reply is appropriate.
-- "ignore": spam, promotions, automated messages, OTP/verification codes, delivery notifications, bulk broadcasts, chain messages, or messages where any reply would be odd (e.g. "ok", "thanks", an emoji alone).
-Reply with JSON only: {"category":"important|casual|ignore","reason":"short reason, max 12 words"}`
+// ---------------------------------------------------------------- Groq triage + reply suggestions
+function triagePrompt (name, wantReplies, isGroup) {
+  const classify = isGroup
+    ? `This message is from a WhatsApp group and mentions ${name}. Use category "important".`
+    : `Classify the latest incoming message(s) into exactly one category:
+- "important": urgent or time-sensitive, emergencies, health/safety, money or work matters needing a quick answer, someone asking ${name} to call back urgently, family emergencies, deadlines, anything bad to leave unanswered for hours.
+- "casual": greetings, small talk, simple questions, chit-chat, plans, things that can wait.
+- "ignore": spam, promotions, automated messages, OTP/verification codes, delivery notifications, bulk broadcasts, chain messages, or messages that need no reply at all (e.g. "ok", "thanks", an emoji alone).`
+  const replies = wantReplies
+    ? `
+Also write exactly 3 different reply suggestions that ${name} could send back himself (first person, as ${name}):
+- Match the sender's language and style (Roman Urdu if they wrote Roman Urdu, Urdu script if Urdu, English if English).
+- Natural, friendly WhatsApp tone, under 25 words each, no hashtags.
+- Make them different: e.g. one that answers or agrees, one that asks a question or proposes a time, one short polite acknowledgement.
+- Don't invent facts (times, places, amounts) that ${name} didn't give; keep them general when unsure.
+- For category "ignore", "replies" may be an empty list.`
+    : ''
+  return `You help ${name}, who is busy, deal with incoming WhatsApp messages.
+${classify}${replies}
+Reply with JSON only: {"category":"important|casual|ignore","reason":"short reason, max 12 words"${wantReplies ? ',"replies":["...","...","..."]' : ''}}`
+}
 
-async function classify (sender, text) {
-  if (!config.groqKey) return fallback(text, 'No Groq API key set, used simple rules')
-  const models = [config.model || 'openai/gpt-oss-20b', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b']
-  const tried = new Set()
-  for (const model of models) {
-    if (tried.has(model)) continue
-    tried.add(model)
-    try {
-      const body = {
-        model,
-        temperature: 0,
-        max_completion_tokens: 400,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT(firstName()) },
-          { role: 'user', content: `From: ${sender}\nMessage:\n${text.slice(0, 2000)}` }
-        ]
-      }
-      if (model.startsWith('openai/gpt-oss')) body.reasoning_effort = 'low'
-      const ctrl = new AbortController()
-      const timer = setTimeout(() => ctrl.abort(), 20000)
-      const res = await fetch(process.env.BUSYMODE_GROQ_URL || 'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + config.groqKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: ctrl.signal
-      }).finally(() => clearTimeout(timer))
-      if (res.status === 401) return fallback(text, 'Groq rejected the API key, used simple rules')
-      if (res.status === 404 || res.status === 400) {
-        const errText = Buffer.from(await res.arrayBuffer()).toString('utf8')
-        if (/model/i.test(errText)) { log(`Groq model ${model} unavailable, trying another`); continue }
-        throw new Error('Groq error ' + res.status)
-      }
-      if (!res.ok) throw new Error('Groq error ' + res.status)
-      const data = JSON.parse(Buffer.from(await res.arrayBuffer()).toString('utf8'))
-      const out = data?.choices?.[0]?.message?.content || ''
-      const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
-      const category = ['important', 'casual', 'ignore'].includes(json.category) ? json.category : 'casual'
-      return { category, reason: 'AI: ' + String(json.reason || category).slice(0, 120) }
-    } catch (e) {
-      log('Groq request failed: ' + e.message)
-      return fallback(text, 'AI unavailable, used simple rules')
-    }
+async function triage ({ sender, chatName, isGroup, text, jid, wantReplies }) {
+  const context = store.recent({ hours: 72, limit: 10, chatFilter: (m) => m.chatJid === jid })
+    .map((m) => `${m.fromMe ? firstName() + ' (me)' : m.sender}: ${String(m.text).slice(0, 200)}`).join('\n')
+  if (!config.groqKey) return { ...fallback(text, 'No Groq API key set, used simple rules'), replies: [] }
+  try {
+    const msg = await groq.chat({
+      temperature: wantReplies ? 0.5 : 0,
+      max_completion_tokens: wantReplies ? 900 : 400,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: triagePrompt(firstName(), wantReplies, isGroup) },
+        { role: 'user', content: `Chat: ${chatName}${isGroup ? ' (group)' : ''}\nRecent conversation (oldest first):\n${context || '(none)'}\n\nLatest from ${sender}:\n${text.slice(0, 2000)}` }
+      ]
+    }, { models: [config.model, 'openai/gpt-oss-20b', 'openai/gpt-oss-120b'], timeoutMs: 25000 })
+    const json = parseJsonObject(msg.content)
+    const category = isGroup ? 'important' : (['important', 'casual', 'ignore'].includes(json.category) ? json.category : 'casual')
+    const replies = Array.isArray(json.replies) ? json.replies.map((r) => String(r).trim()).filter(Boolean).slice(0, 3) : []
+    return { category, reason: 'AI: ' + String(json.reason || category).slice(0, 120), replies }
+  } catch (e) {
+    log('Groq request failed: ' + e.message)
+    const why = e.status === 401 ? 'Groq rejected the API key, used simple rules' : 'AI unavailable, used simple rules'
+    return { ...fallback(text, why), replies: [] }
   }
-  return fallback(text, 'No Groq model available, used simple rules')
 }
 
 function fallback (text, reason) {

@@ -59,6 +59,69 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Voice assistant -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/voice_card"
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/CardTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Voice assistant" />
+
+                        <TextView
+                            android:id="@+id/voice_status"
+                            style="@style/Hint"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="Say “Assistant” to start" />
+                    </LinearLayout>
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/voice_switch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+
+                <TextView
+                    style="@style/Hint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textSize="13sp"
+                    android:text="Try: “Assistant” … “What are my latest messages?” or “Message Sumaya that I'll call her at 6”. The wake word is detected on the phone; only what you say after it is sent for speech recognition." />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/talk_now"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Talk now"
+                    app:icon="@drawable/ic_mic" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Linking -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/link_card"

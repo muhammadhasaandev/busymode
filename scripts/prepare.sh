@@ -15,6 +15,19 @@ for abi in arm64-v8a armeabi-v7a; do
   cp "$TMP/package/android/libnode/bin/$abi/libnode.so" "$ROOT/app/src/main/jniLibs/$abi/libnode.so"
 done
 
+echo "› Downloading the offline wake-word model (Vosk small English)"
+MODEL_NAME="vosk-model-small-en-us-0.15"
+MODEL_DIR="$ROOT/app/src/main/assets/vosk-model"
+if [ ! -f "$MODEL_DIR/conf/model.conf" ]; then
+  curl -fsSL --retry 3 -o "$TMP/model.zip" "https://alphacephei.com/vosk/models/$MODEL_NAME.zip"
+  (cd "$TMP" && unzip -q model.zip)
+  rm -rf "$MODEL_DIR"
+  mkdir -p "$(dirname "$MODEL_DIR")"
+  mv "$TMP/$MODEL_NAME" "$MODEL_DIR"
+  rm -f "$MODEL_DIR/README"
+fi
+du -sh "$MODEL_DIR"
+
 echo "› Bundling the WhatsApp engine"
 cd "$ROOT/engine"
 npm ci --no-audit --no-fund

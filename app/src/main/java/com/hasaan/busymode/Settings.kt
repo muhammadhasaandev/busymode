@@ -34,9 +34,22 @@ class Settings(context: Context) {
         get() = prefs.getString("reply_text", DEFAULT_REPLY)!!
         set(v) = prefs.edit().putString("reply_text", v.trim()).apply()
 
-    var autoReply: Boolean
-        get() = prefs.getBoolean("auto_reply", true)
-        set(v) = prefs.edit().putBoolean("auto_reply", v).apply()
+    /** "suggest" = AI suggestions I approve, "auto" = automatic busy reply, "off" = no replies. */
+    var replyMode: String
+        get() = prefs.getString("reply_mode", "suggest")!!
+        set(v) = prefs.edit().putString("reply_mode", v).apply()
+
+    var voiceWake: Boolean
+        get() = prefs.getBoolean("voice_wake", false)
+        set(v) = prefs.edit().putBoolean("voice_wake", v).apply()
+
+    var countryCode: String
+        get() = prefs.getString("country_code", "92")!!.ifBlank { "92" }
+        set(v) = prefs.edit().putString("country_code", v.filter { it.isDigit() }).apply()
+
+    var agentModel: String
+        get() = prefs.getString("agent_model", DEFAULT_AGENT_MODEL)!!.ifBlank { DEFAULT_AGENT_MODEL }
+        set(v) = prefs.edit().putString("agent_model", v.trim()).apply()
 
     var voiceAlerts: Boolean
         get() = prefs.getBoolean("voice_alerts", true)
@@ -71,7 +84,11 @@ class Settings(context: Context) {
         put("model", model)
         put("ownerName", ownerName)
         put("replyText", replyText.ifBlank { DEFAULT_REPLY })
-        put("autoReply", autoReply)
+        put("replyMode", replyMode)
+        put("autoReply", replyMode == "auto")
+        put("agentModel", agentModel)
+        put("countryCode", countryCode)
+        put("tzOffsetMin", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000)
         put("voiceAlerts", voiceAlerts)
         put("replyCooldownMin", replyCooldownMin)
         put("ignoreList", JSONArray(ignoreList))
@@ -93,6 +110,7 @@ class Settings(context: Context) {
     companion object {
         const val DEFAULT_REPLY = "Hasaan is busy right now, he will get back to you soon."
         const val DEFAULT_MODEL = "openai/gpt-oss-20b"
+        const val DEFAULT_AGENT_MODEL = "openai/gpt-oss-120b"
         fun lines(s: String?): List<String> =
             (s ?: "").split('\n').map { it.trim() }.filter { it.isNotEmpty() }
     }

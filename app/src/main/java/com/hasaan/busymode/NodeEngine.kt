@@ -35,6 +35,9 @@ object NodeEngine {
         fun onAnnounce(text: String) {}
         fun onEvent(entry: JSONObject) {}
         fun onConnected() {}
+        fun onApproval(item: JSONObject) {}
+        fun onApprovalDone(id: String, status: String) {}
+        fun onSay(session: Int, text: String, listen: Boolean) {}
     }
 
     @Volatile var status = Status()
@@ -174,6 +177,9 @@ object NodeEngine {
             "announce" -> listeners.forEach { it.onAnnounce(msg.optString("text")) }
             "event" -> msg.optJSONObject("entry")?.let { e -> listeners.forEach { it.onEvent(e) } }
             "error" -> listeners.forEach { it.onError(msg.optString("message")) }
+            "approval" -> msg.optJSONObject("item")?.let { item -> listeners.forEach { it.onApproval(item) } }
+            "approval_done" -> listeners.forEach { it.onApprovalDone(msg.optString("id"), msg.optString("status")) }
+            "say" -> listeners.forEach { it.onSay(msg.optInt("session"), msg.optString("text"), msg.optBoolean("listen")) }
             "log" -> Log.i(TAG, msg.optString("message"))
         }
     }
@@ -211,4 +217,9 @@ object NodeEngine {
     fun stop() = send(JSONObject().put("t", "stop"))
     fun pair(phone: String) = send(JSONObject().put("t", "pair").put("phone", phone))
     fun logout() = send(JSONObject().put("t", "logout"))
+    fun approve(id: String, chatJid: String, text: String) =
+        send(JSONObject().put("t", "approve").put("id", id).put("chatJid", chatJid).put("text", text))
+    fun reject(id: String) = send(JSONObject().put("t", "reject").put("id", id))
+    fun voice(session: Int, text: String) = send(JSONObject().put("t", "voice").put("session", session).put("text", text))
+    fun contacts(list: org.json.JSONArray) = send(JSONObject().put("t", "contacts").put("list", list))
 }

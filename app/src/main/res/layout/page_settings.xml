@@ -80,12 +80,37 @@
 
                 <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="What to do" />
 
-                <com.google.android.material.materialswitch.MaterialSwitch
-                    android:id="@+id/auto_reply"
-                    android:layout_width="match_parent"
+                <TextView
+                    style="@style/Hint"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="Auto-reply to casual messages" />
+                    android:text="When someone messages you" />
+
+                <RadioGroup
+                    android:id="@+id/reply_mode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp">
+
+                    <com.google.android.material.radiobutton.MaterialRadioButton
+                        android:id="@+id/mode_suggest"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Suggest 3 replies, I approve before sending" />
+
+                    <com.google.android.material.radiobutton.MaterialRadioButton
+                        android:id="@+id/mode_auto"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Auto-send the busy message below" />
+
+                    <com.google.android.material.radiobutton.MaterialRadioButton
+                        android:id="@+id/mode_off"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Don't reply, only alert me" />
+                </RadioGroup>
 
                 <com.google.android.material.textfield.TextInputLayout
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
@@ -147,6 +172,38 @@
 
                 <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Contacts and groups" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/contacts_btn"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Allow access to phone contacts" />
+
+                <TextView
+                    style="@style/Hint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="13sp"
+                    android:text="Lets the assistant find people by name (“message Sumaya”) and show saved names." />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:hint="Your country code"
+                    app:helperText="Used for contact numbers saved without it, e.g. 0300…"
+                    app:prefixText="+">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/country_code"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="number"
+                        android:maxLines="1" />
+                </com.google.android.material.textfield.TextInputLayout>
+
                 <TextView
                     style="@style/Hint"
                     android:layout_width="wrap_content"
@@ -206,11 +263,28 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:hint="Groq model"
+                    android:hint="Message triage model"
                     app:helperText="Leave as is unless Groq retires this model">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/model"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:inputType="text"
+                        android:maxLines="1" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:hint="Voice assistant model"
+                    app:helperText="Leave as is unless Groq retires this model">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/agent_model"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"

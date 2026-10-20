@@ -19,6 +19,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -28,6 +29,9 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.RadioGroup
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -40,6 +44,20 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
     private var tts: TextToSpeech? = null
     private var waitingForCode = false
     private val logListener: () -> Unit = { runOnUiThread { refreshLog() } }
+    private val approvalsListener: () -> Unit = { runOnUiThread { refreshReplies() } }
+    private val voiceListener: () -> Unit = { runOnUiThread { refreshVoice() } }
+    private lateinit var bottomNav: BottomNavigationView
+    private var afterPermissions: ((Map<String, Boolean>) -> Unit)? = null
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        afterPermissions?.invoke(result)
+        afterPermissions = null
+    }
+
+    // replies + voice
+    private val approvalAdapter = ApprovalAdapter({ item, text -> confirmSend(item, text) }, { item -> skipApproval(item) })
+    private lateinit var repliesEmpty: TextView
+    private lateinit var voiceSwitch: MaterialSwitch
+    private lateinit var voiceStatus: TextView
 
     // home
     private lateinit var statusDot: View
@@ -66,27 +84,52 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
 
         val pages = mapOf(
             R.id.nav_home to findViewById<View>(R.id.page_home),
+            R.id.nav_replies to findViewById(R.id.page_replies),
             R.id.nav_log to findViewById(R.id.page_log),
             R.id.nav_settings to findViewById(R.id.page_settings)
         )
-        findViewById<BottomNavigationView>(R.id.bottom_nav).setOnItemSelectedListener { item ->
+        bottomNav = findViewById(R.id.bottom_nav)
+        bottomNav.setOnItemSelectedListener { item ->
             pages.forEach { (id, v) -> v.visibility = if (id == item.itemId) View.VISIBLE else View.GONE }
             if (item.itemId == R.id.nav_settings) loadSettings()
             true
         }
 
         setupHome()
+        setupVoice()
+        setupReplies()
         setupLog()
         setupSettings()
         askNotificationPermission()
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(i: Intent?) {
+        if (i == null) return
+        if (i.getStringExtra(EXTRA_TAB) == TAB_REPLIES) bottomNav.selectedItemId = R.id.nav_replies
+        if (i.getBooleanExtra(EXTRA_TALK, false)) {
+            i.removeExtra(EXTRA_TALK)
+            talkNow()
+        }
     }
 
     override fun onStart() {
         super.onStart()
         NodeEngine.addListener(this)
         LogStore.addListener(logListener)
+        ApprovalStore.addListener(approvalsListener)
+        VoiceAssistant.addStateListener(voiceListener)
+        // Opening the app lets Android grant the microphone to the background service again.
+        if (settings.enabled) EngineService.start(this)
         refreshStatus()
         refreshLog()
+        refreshReplies()
+        refreshVoice()
         NodeEngine.pairingCode?.let { showCode(it) }
         NodeEngine.startupError?.let { onError(it) }
     }
@@ -99,6 +142,8 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
     override fun onStop() {
         NodeEngine.removeListener(this)
         LogStore.removeListener(logListener)
+        ApprovalStore.removeListener(approvalsListener)
+        VoiceAssistant.removeStateListener(voiceListener)
         super.onStop()
     }
 
@@ -340,6 +385,120 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         toast(if (important) "$name will always be announced" else "$name will always be ignored")
     }
 
+    // ------------------------------------------------------------------ permissions
+
+    private fun askPermissions(perms: Array<String>, then: (Map<String, Boolean>) -> Unit) {
+        val missing = perms.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) { then(perms.associateWith { true }); return }
+        afterPermissions = then
+        permissionLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun refreshContactsButton() {
+        val b = findViewById<MaterialButton>(R.id.contacts_btn)
+        val ok = ContactsReader.hasPermission(this)
+        b.text = if (ok) "Phone contacts: allowed" else "Allow access to phone contacts"
+        b.isEnabled = !ok
+    }
+
+    // ------------------------------------------------------------------ voice
+
+    private fun setupVoice() {
+        voiceSwitch = findViewById(R.id.voice_switch)
+        voiceStatus = findViewById(R.id.voice_status)
+        voiceSwitch.isChecked = settings.voiceWake
+        voiceSwitch.setOnCheckedChangeListener { _, on ->
+            if (on == settings.voiceWake) return@setOnCheckedChangeListener
+            if (!on) {
+                settings.voiceWake = false
+                if (settings.enabled) EngineService.start(this)
+                refreshVoice()
+                return@setOnCheckedChangeListener
+            }
+            askPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS)) { r ->
+                if (r[Manifest.permission.RECORD_AUDIO] == false) {
+                    voiceSwitch.isChecked = false
+                    toast("The microphone is needed to hear “Assistant”")
+                    return@askPermissions
+                }
+                settings.voiceWake = true
+                if (!settings.enabled) {
+                    toast("Turn on Busy Mode at the top to use the voice assistant")
+                } else EngineService.start(this)
+                refreshVoice()
+            }
+        }
+        findViewById<MaterialButton>(R.id.talk_now).setOnClickListener { talkNow() }
+    }
+
+    private fun talkNow() {
+        if (!settings.enabled) { toast("Turn on Busy Mode at the top first"); return }
+        askPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CONTACTS)) { r ->
+            if (r[Manifest.permission.RECORD_AUDIO] == false) { toast("The microphone is needed to talk to the assistant"); return@askPermissions }
+            EngineService.start(this, EngineService.ACTION_TALK)
+        }
+    }
+
+    private fun refreshVoice() {
+        if (voiceSwitch.isChecked != settings.voiceWake) voiceSwitch.isChecked = settings.voiceWake
+        voiceStatus.text = when (VoiceAssistant.state) {
+            VoiceAssistant.State.LOADING -> "Getting ready…"
+            VoiceAssistant.State.WAITING -> "Listening for “Assistant”"
+            VoiceAssistant.State.PROMPTING, VoiceAssistant.State.SPEAKING -> "Speaking…"
+            VoiceAssistant.State.LISTENING -> "Listening… speak now"
+            VoiceAssistant.State.THINKING -> "Thinking…"
+            VoiceAssistant.State.ERROR -> VoiceAssistant.detail.ifBlank { "Voice assistant problem" }
+            VoiceAssistant.State.OFF -> if (settings.voiceWake) "Starting…" else "Wake word off — tap Talk now, or turn it on"
+        }
+    }
+
+    // ------------------------------------------------------------------ replies
+
+    private fun setupReplies() {
+        repliesEmpty = findViewById(R.id.replies_empty)
+        findViewById<RecyclerView>(R.id.replies_list).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = approvalAdapter
+        }
+    }
+
+    private fun refreshReplies() {
+        val items = ApprovalStore.all()
+        approvalAdapter.submit(items)
+        repliesEmpty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+        val badge = bottomNav.getOrCreateBadge(R.id.nav_replies)
+        badge.isVisible = items.isNotEmpty()
+        badge.number = items.size
+    }
+
+    private fun confirmSend(item: ApprovalStore.Item, suggestion: String) {
+        val input = EditText(this).apply {
+            setText(suggestion)
+            setSelection(suggestion.length)
+        }
+        val box = LinearLayout(this).apply {
+            setPadding(48, 16, 48, 0)
+            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Send to ${item.chatName}?")
+            .setView(box)
+            .setPositiveButton("Send") { _, _ ->
+                val text = input.text.toString().trim()
+                if (text.isEmpty()) return@setPositiveButton
+                if (!settings.enabled) EngineService.start(this)
+                Approvals.approve(this, item, text)
+                toast("Sending to ${item.chatName}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun skipApproval(item: ApprovalStore.Item) {
+        Approvals.reject(this, item)
+        toast("Not sent")
+    }
+
     // ------------------------------------------------------------------ settings
 
     private fun setupSettings() {
@@ -349,6 +508,12 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         }
         findViewById<MaterialButton>(R.id.test_voice).setOnClickListener { testVoice() }
         findViewById<MaterialButton>(R.id.save).setOnClickListener { saveSettings() }
+        findViewById<MaterialButton>(R.id.contacts_btn).setOnClickListener {
+            askPermissions(arrayOf(Manifest.permission.READ_CONTACTS)) {
+                refreshContactsButton()
+                if (settings.enabled) EngineService.start(this)
+            }
+        }
     }
 
     private fun field(id: Int) = findViewById<TextInputEditText>(id)
@@ -361,7 +526,12 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         field(R.id.important_list).setText(settings.importantList.joinToString("\n"))
         field(R.id.ignore_list).setText(settings.ignoreList.joinToString("\n"))
         field(R.id.model).setText(settings.model)
-        findViewById<MaterialSwitch>(R.id.auto_reply).isChecked = settings.autoReply
+        findViewById<RadioGroup>(R.id.reply_mode).check(
+            when (settings.replyMode) { "auto" -> R.id.mode_auto; "off" -> R.id.mode_off; else -> R.id.mode_suggest }
+        )
+        field(R.id.country_code).setText(settings.countryCode)
+        field(R.id.agent_model).setText(settings.agentModel)
+        refreshContactsButton()
         findViewById<MaterialSwitch>(R.id.voice_alerts).isChecked = settings.voiceAlerts
     }
 
@@ -373,7 +543,11 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         settings.importantList = Settings.lines(field(R.id.important_list).text.toString())
         settings.ignoreList = Settings.lines(field(R.id.ignore_list).text.toString())
         settings.model = field(R.id.model).text.toString()
-        settings.autoReply = findViewById<MaterialSwitch>(R.id.auto_reply).isChecked
+        settings.replyMode = when (findViewById<RadioGroup>(R.id.reply_mode).checkedRadioButtonId) {
+            R.id.mode_auto -> "auto"; R.id.mode_off -> "off"; else -> "suggest"
+        }
+        settings.countryCode = field(R.id.country_code).text.toString()
+        settings.agentModel = field(R.id.agent_model).text.toString()
         settings.voiceAlerts = findViewById<MaterialSwitch>(R.id.voice_alerts).isChecked
         NodeEngine.sendConfig(settings)
         loadSettings()
@@ -398,6 +572,56 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+    companion object {
+        const val EXTRA_TAB = "tab"
+        const val EXTRA_TALK = "talk"
+        const val TAB_REPLIES = "replies"
+    }
+}
+
+/** Cards for messages waiting for reply approval. */
+class ApprovalAdapter(
+    private val onPick: (ApprovalStore.Item, String) -> Unit,
+    private val onSkip: (ApprovalStore.Item) -> Unit
+) : RecyclerView.Adapter<ApprovalAdapter.VH>() {
+    private var items: List<ApprovalStore.Item> = emptyList()
+    private val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+    @SuppressLint("NotifyDataSetChanged")
+    fun submit(list: List<ApprovalStore.Item>) { items = list; notifyDataSetChanged() }
+
+    class VH(v: View) : RecyclerView.ViewHolder(v) {
+        val chat: TextView = v.findViewById(R.id.ap_chat)
+        val time: TextView = v.findViewById(R.id.ap_time)
+        val text: TextView = v.findViewById(R.id.ap_text)
+        val suggestions: LinearLayout = v.findViewById(R.id.ap_suggestions)
+        val skip: MaterialButton = v.findViewById(R.id.ap_skip)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+        VH(LayoutInflater.from(parent.context).inflate(R.layout.item_approval, parent, false))
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(h: VH, position: Int) {
+        val a = items[position]
+        h.chat.text = if (a.isGroup) "${a.sender} · ${a.chatName}" else a.chatName
+        h.time.text = timeFmt.format(Date(a.time))
+        h.text.text = a.text
+        h.suggestions.removeAllViews()
+        val ctx = h.itemView.context
+        a.suggestions.forEach { s ->
+            val b = MaterialButton(ctx, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                text = s
+                isAllCaps = false
+                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                setOnClickListener { onPick(a, s) }
+            }
+            h.suggestions.addView(b, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        h.skip.setOnClickListener { onSkip(a) }
+    }
 }
 
 /** Simple list of log entries. */
@@ -426,7 +650,9 @@ class LogAdapter(private val onTap: (LogStore.Entry) -> Unit) : RecyclerView.Ada
         val e = items[position]
         val ctx = h.itemView.context
         val (label, color) = when (e.action) {
-            "auto_replied" -> "Replied" to R.color.act_replied
+            "auto_replied" -> "Auto-replied" to R.color.act_replied
+            "replied" -> "You replied" to R.color.act_replied
+            "suggested" -> "Suggested" to R.color.act_noted
             "announced" -> "Announced" to R.color.act_announced
             "noted" -> "Noted" to R.color.act_noted
             else -> "Ignored" to R.color.act_ignored
