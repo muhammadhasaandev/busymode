@@ -55,11 +55,37 @@ object NodeEngine {
 
     private external fun startNode(args: Array<String>): Int
 
+    /** Last startup failure, shown to the user instead of crashing the app. */
+    @Volatile var startupError: String? = null
+        private set
+
+    /** Starts the engine once. Never throws: a failure is reported through [onError] instead. */
     @Synchronized
-    fun ensureStarted(context: Context) {
-        if (started) return
+    fun ensureStarted(context: Context): Boolean {
+        if (started) return startupError == null
         started = true
         val app = context.applicationContext
+        // Start off the main thread (sockets and copying files are not allowed on it).
+        Thread({
+            try {
+                startInternal(app)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Engine failed to start", t)
+                val msg = "The WhatsApp engine could not start on this phone (${t.javaClass.simpleName}: ${t.message}). Please send a screenshot of this message."
+                startupError = msg
+                main.post { listeners.forEach { it.onError(msg) } }
+            }
+        }, "engine-start").start()
+        return true
+    }
+
+    private fun startInternal(app: Context) {
+        // Android has no /tmp; give Node a writable temp folder and home.
+        try {
+            android.system.Os.setenv("TMPDIR", app.cacheDir.absolutePath, true)
+            android.system.Os.setenv("HOME", app.filesDir.absolutePath, true)
+        } catch (_: Exception) {}
+        System.loadLibrary("c++_shared")
         System.loadLibrary("node")
         System.loadLibrary("busymode-native")
 

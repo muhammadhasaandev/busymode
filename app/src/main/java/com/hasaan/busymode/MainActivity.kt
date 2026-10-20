@@ -88,6 +88,7 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         refreshStatus()
         refreshLog()
         NodeEngine.pairingCode?.let { showCode(it) }
+        NodeEngine.startupError?.let { onError(it) }
     }
 
     override fun onResume() {

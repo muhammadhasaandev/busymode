@@ -19,6 +19,13 @@ jobs:
         with:
           node-version: 20
 
+      # Reuse the same signing key on every build so new versions install over old ones.
+      - name: Keep signing key between builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: busymode-signing-key-v1
+
       - name: Prepare Node.js runtime and engine
         run: ./scripts/prepare.sh
 

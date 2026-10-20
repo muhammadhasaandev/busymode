@@ -11,10 +11,16 @@ android {
         applicationId = "com.hasaan.busymode"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-        externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                // libnode.so needs the shared C++ runtime, so package libc++_shared.so with the app.
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildTypes {

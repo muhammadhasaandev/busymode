@@ -17,13 +17,6 @@ const DATA_DIR = DATA_DIR_ARG || path.join(process.cwd(), 'data')
 const AUTH_DIR = path.join(DATA_DIR, 'wa-auth')
 fs.mkdirSync(DATA_DIR, { recursive: true })
 
-const B = await import('baileys')
-const makeWASocket = B.default
-const {
-  useMultiFileAuthState, DisconnectReason, Browsers, normalizeMessageContent, getContentType,
-  jidNormalizedUser, isJidGroup, isJidBroadcast, isJidNewsletter, isJidStatusBroadcast, areJidsSameUser
-} = B
-
 // ---------------------------------------------------------------- bridge to Android
 let bridge = null
 let bridgeBuf = ''
@@ -58,6 +51,24 @@ function connectBridge () {
   s.on('error', () => {})
   s.on('close', () => { if (bridge === s) bridge = null; bridgeBuf = ''; setTimeout(connectBridge, 1500) })
 }
+
+// Never let an error close the app: report it to Android instead.
+process.on('uncaughtException', (e) => { console.error('uncaught', e); send({ t: 'log', message: 'Engine error: ' + (e && e.message) }) })
+process.on('unhandledRejection', (e) => { console.error('unhandled', e) })
+
+let B = null
+let bootError = null
+try {
+  B = await import('baileys')
+} catch (e) {
+  bootError = e
+  console.error('Failed to load WhatsApp library', e)
+}
+const makeWASocket = B?.default
+const {
+  useMultiFileAuthState, DisconnectReason, Browsers, normalizeMessageContent, getContentType,
+  jidNormalizedUser, isJidGroup, isJidBroadcast, isJidNewsletter, isJidStatusBroadcast, areJidsSameUser
+} = B || {}
 
 // ---------------------------------------------------------------- settings (pushed from Android)
 const config = {
@@ -127,6 +138,7 @@ const logger = {
 
 async function startWhatsApp () {
   if (sock) return
+  if (!B) { send({ t: 'error', message: 'WhatsApp library failed to load: ' + (bootError && bootError.message) }); return }
   clearTimeout(retryTimer)
   const myGen = ++generation
   setState('connecting')
@@ -467,14 +479,13 @@ function fallback (text, reason) {
 }
 
 // ---------------------------------------------------------------- go
-process.on('uncaughtException', (e) => { console.error('uncaught', e) ; send({ t: 'log', message: 'Engine error: ' + e.message }) })
-process.on('unhandledRejection', (e) => { console.error('unhandled', e) })
 
 if (!PORT) {
   console.error('Usage: node main.mjs <port> <token> <dataDir>')
   process.exit(1)
 }
 connectBridge()
+if (bootError) send({ t: 'error', message: 'WhatsApp library failed to load: ' + bootError.message })
 // If we were linked before, reconnect straight away; Android also sends "start".
 if (fs.existsSync(path.join(AUTH_DIR, 'creds.json'))) {
   try {
