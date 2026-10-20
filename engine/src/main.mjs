@@ -315,7 +315,9 @@ function ownerNames () {
 function firstName () { return ownerNames()[0] || 'Hasaan' }
 
 function mentionsOwnerByName (text) {
-  return ownerNames().some((n) => new RegExp('(^|[^\\p{L}])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}])', 'iu').test(text))
+  // Letters of Latin and Urdu/Arabic scripts count as part of a word (no ICU on Android, so no \\p{L}).
+  const L = 'A-Za-z0-9\\u00C0-\\u024F\\u0600-\\u06FF\\u0750-\\u077F'
+  return ownerNames().some((n) => new RegExp('(^|[^' + L + '])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^' + L + '])', 'i').test(text))
 }
 
 function isMe (jid) { return !!jid && myIds.some((m) => areJidsSameUser(m, jid)) }
@@ -449,12 +451,12 @@ async function classify (sender, text) {
       }).finally(() => clearTimeout(timer))
       if (res.status === 401) return fallback(text, 'Groq rejected the API key, used simple rules')
       if (res.status === 404 || res.status === 400) {
-        const errText = await res.text()
+        const errText = Buffer.from(await res.arrayBuffer()).toString('utf8')
         if (/model/i.test(errText)) { log(`Groq model ${model} unavailable, trying another`); continue }
         throw new Error('Groq error ' + res.status)
       }
       if (!res.ok) throw new Error('Groq error ' + res.status)
-      const data = await res.json()
+      const data = JSON.parse(Buffer.from(await res.arrayBuffer()).toString('utf8'))
       const out = data?.choices?.[0]?.message?.content || ''
       const json = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1))
       const category = ['important', 'casual', 'ignore'].includes(json.category) ? json.category : 'casual'
