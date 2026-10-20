@@ -37,7 +37,7 @@ object NodeEngine {
         fun onConnected() {}
         fun onApproval(item: JSONObject) {}
         fun onApprovalDone(id: String, status: String) {}
-        fun onSay(session: Int, text: String, listen: Boolean) {}
+        fun onSay(session: Int, text: String, listen: Boolean, ui: JSONObject?, lang: String) {}
     }
 
     @Volatile var status = Status()
@@ -179,7 +179,7 @@ object NodeEngine {
             "error" -> listeners.forEach { it.onError(msg.optString("message")) }
             "approval" -> msg.optJSONObject("item")?.let { item -> listeners.forEach { it.onApproval(item) } }
             "approval_done" -> listeners.forEach { it.onApprovalDone(msg.optString("id"), msg.optString("status")) }
-            "say" -> listeners.forEach { it.onSay(msg.optInt("session"), msg.optString("text"), msg.optBoolean("listen")) }
+            "say" -> listeners.forEach { it.onSay(msg.optInt("session"), msg.optString("text"), msg.optBoolean("listen"), msg.optJSONObject("ui"), msg.optString("lang", "en")) }
             "log" -> Log.i(TAG, msg.optString("message"))
         }
     }

@@ -13,7 +13,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { createGroq, parseJsonObject } from './groq.mjs'
 import { createStore } from './store.mjs'
-import { createAgent, normalizeNumber } from './agent.mjs'
+import { createAgent, normalizeNumber, nameScore } from './agent.mjs'
 
 const [, , PORT_ARG, TOKEN, DATA_DIR_ARG] = process.argv
 const PORT = Number(PORT_ARG)
@@ -88,7 +88,10 @@ const config = {
   importantList: [],
   replyCooldownMin: 60,
   countryCode: '92',
-  tzOffsetMin: 300
+  tzOffsetMin: 300,
+  assistantLanguage: 'auto', // auto | en | ur
+  ttsUrdu: false,
+  ttsHindi: false
 }
 let phoneContacts = [] // [{ n: name, p: number }] from the Android address book
 
@@ -126,8 +129,8 @@ function handleCommand (cmd) {
       break
     case 'voice':
       agent.handle(cmd.session, String(cmd.text || ''))
-        .then((r) => send({ t: 'say', session: cmd.session, text: r.text, listen: !!r.listen }))
-        .catch((e) => { log('Voice failed: ' + e.message); send({ t: 'say', session: cmd.session, text: 'Sorry, something went wrong.', listen: false }) })
+        .then((r) => send({ t: 'say', session: cmd.session, text: r.text, listen: !!r.listen, ui: r.ui || null, lang: r.lang || 'en' }))
+        .catch((e) => { log('Voice failed: ' + e.message); send({ t: 'say', session: cmd.session, text: 'Sorry, something went wrong.', listen: false, lang: 'en' }) })
       break
     case 'test_message': // used only by the automated tests on a computer
       if (process.env.BUSYMODE_TEST === '1') handleUpsert([cmd.message], 'notify')
@@ -373,8 +376,39 @@ if (process.env.BUSYMODE_TEST === '1') { // automated tests on a computer: prete
 const agent = createAgent({
   groq, store, wa, config, log,
   getContacts: () => phoneContacts,
-  getApprovals: () => [...approvals.values()]
+  getApprovals: () => [...approvals.values()],
+  getSuggestions: suggestionsFor,
+  sendSuggestion: (item, text) => approveReply({ id: item.id, chatJid: item.chatJid, text, chatName: item.chatName })
 })
+
+/** Latest incoming message of a chat (or overall) with 3 reply options; reuses waiting ones. */
+async function suggestionsFor (chatQuery) {
+  const q = String(chatQuery || '').trim()
+  const incoming = store.all().filter((m) => !m.fromMe)
+  let target = null
+  if (q) {
+    let best = 0
+    for (let i = incoming.length - 1; i >= 0; i--) {
+      const m = incoming[i]
+      const score = Math.max(nameScore(q, m.chatName), m.isGroup ? 0 : nameScore(q, m.sender))
+      if (score > best + 5) { best = score; target = m }
+    }
+    if (best < 55) return { error: `No recent message from "${q}".` }
+  } else {
+    target = incoming.filter((m) => !m.isGroup).pop() || incoming.pop()
+    if (!target) return { error: 'No received messages yet.' }
+  }
+  const existing = [...approvals.values()].find((a) => a.chatJid === target.chatJid)
+  if (existing) return { item: existing }
+  // The unanswered messages from this chat since my last message.
+  const chatMsgs = store.all().filter((m) => m.chatJid === target.chatJid)
+  const lastMine = chatMsgs.map((m) => m.fromMe).lastIndexOf(true)
+  const unanswered = chatMsgs.slice(lastMine + 1).filter((m) => !m.fromMe).slice(-5)
+  const text = (unanswered.length ? unanswered : [target]).map((m) => m.text).join('\n')
+  const v = await triage({ sender: target.sender, chatName: target.chatName, isGroup: target.isGroup, text, jid: target.chatJid, wantReplies: true })
+  if (!v.replies.length) return { error: 'Could not write reply options right now.' }
+  return { item: createApproval({ chatJid: target.chatJid, chatName: target.chatName, sender: target.sender, isGroup: target.isGroup, text, suggestions: v.replies, reason: 'You asked the assistant' }) }
+}
 
 function contactNameFor (number) {
   if (!number) return null
@@ -523,6 +557,7 @@ function createApproval ({ chatJid, chatName, sender, isGroup, text, suggestions
   }
   approvals.set(item.id, item)
   send({ t: 'approval', item })
+  return item
 }
 
 function finishApproval (id, status) {

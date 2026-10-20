@@ -137,6 +137,7 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
     override fun onResume() {
         super.onResume()
         refreshBattery()
+        refreshVoice()
     }
 
     override fun onStop() {
@@ -429,6 +430,13 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
             }
         }
         findViewById<MaterialButton>(R.id.talk_now).setOnClickListener { talkNow() }
+        findViewById<MaterialButton>(R.id.overlay_btn).setOnClickListener {
+            try {
+                startActivity(Intent(AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+        }
     }
 
     private fun talkNow() {
@@ -441,6 +449,8 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
 
     private fun refreshVoice() {
         if (voiceSwitch.isChecked != settings.voiceWake) voiceSwitch.isChecked = settings.voiceWake
+        findViewById<MaterialButton>(R.id.overlay_btn).visibility =
+            if (settings.voiceWake && Build.VERSION.SDK_INT >= 23 && !AndroidSettings.canDrawOverlays(this)) View.VISIBLE else View.GONE
         voiceStatus.text = when (VoiceAssistant.state) {
             VoiceAssistant.State.LOADING -> "Getting ready…"
             VoiceAssistant.State.WAITING -> "Listening for “Assistant”"
@@ -507,6 +517,10 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://console.groq.com/keys")))
         }
         findViewById<MaterialButton>(R.id.test_voice).setOnClickListener { testVoice() }
+        findViewById<MaterialButton>(R.id.tts_settings).setOnClickListener {
+            try { startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
+            catch (e: Exception) { startActivity(Intent(AndroidSettings.ACTION_SETTINGS)) }
+        }
         findViewById<MaterialButton>(R.id.save).setOnClickListener { saveSettings() }
         findViewById<MaterialButton>(R.id.contacts_btn).setOnClickListener {
             askPermissions(arrayOf(Manifest.permission.READ_CONTACTS)) {
@@ -532,6 +546,15 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         field(R.id.country_code).setText(settings.countryCode)
         field(R.id.agent_model).setText(settings.agentModel)
         refreshContactsButton()
+        findViewById<RadioGroup>(R.id.assistant_lang).check(
+            when (settings.assistantLanguage) { "ur" -> R.id.lang_ur; "en" -> R.id.lang_en; else -> R.id.lang_auto }
+        )
+        field(R.id.greeting).setText(settings.greeting)
+        findViewById<TextView>(R.id.urdu_voice_status).text = when {
+            Settings.ttsUrdu -> "Urdu voice: installed ✓"
+            Settings.ttsHindi -> "Urdu voice not installed — using the Hindi voice for Urdu (sounds the same). For a true Urdu voice, add Urdu in Phone voice settings."
+            else -> "No Urdu/Hindi voice found — Urdu answers will sound English-accented. Add Urdu in Phone voice settings."
+        }
         findViewById<MaterialSwitch>(R.id.voice_alerts).isChecked = settings.voiceAlerts
     }
 
@@ -548,6 +571,10 @@ class MainActivity : AppCompatActivity(), NodeEngine.Listener {
         }
         settings.countryCode = field(R.id.country_code).text.toString()
         settings.agentModel = field(R.id.agent_model).text.toString()
+        settings.assistantLanguage = when (findViewById<RadioGroup>(R.id.assistant_lang).checkedRadioButtonId) {
+            R.id.lang_ur -> "ur"; R.id.lang_en -> "en"; else -> "auto"
+        }
+        settings.greeting = field(R.id.greeting).text.toString()
         settings.voiceAlerts = findViewById<MaterialSwitch>(R.id.voice_alerts).isChecked
         NodeEngine.sendConfig(settings)
         loadSettings()

@@ -96,10 +96,10 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'find_contact',
-      description: 'Find people by name in the phone contacts and recent WhatsApp chats. Returns candidates with a ref to use in prepare_message.',
+      description: 'Find people by name in the phone contacts and recent WhatsApp chats. Returns numbered candidates (also shown on screen) with a ref to use in prepare_message.',
       parameters: {
         type: 'object',
-        properties: { name: { type: 'string', description: 'The name the user said, e.g. "Sumaya".' } },
+        properties: { name: { type: 'string', description: 'The name in Latin letters as it is likely saved in contacts (e.g. "Sumaya"), even if the user said it in Urdu or it arrived in Urdu/Devanagari script.' } },
         required: ['name']
       }
     }
@@ -112,7 +112,7 @@ const TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          ref: { type: 'string', description: 'The ref of the chosen candidate from find_contact.' },
+          ref: { type: 'string', description: 'The ref of the chosen candidate from find_contact (the user may say "number 2" or tap option 2).' },
           name: { type: 'string', description: 'Recipient name to say back to the user.' },
           text: { type: 'string', description: 'The exact message text to send, as the user wants it written.' }
         },
@@ -143,6 +143,33 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'get_reply_suggestions',
+      description: 'Get the latest incoming message from a chat plus 3 numbered reply options (also shown on screen). Use when the user wants to reply to someone ("reply to Ali", "Ali ko jawab do", "reply to the last message").',
+      parameters: {
+        type: 'object',
+        properties: { chat: { type: 'string', description: 'Contact or group name. Leave empty for the most recent incoming message.' } }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_suggestion',
+      description: 'Send one of the reply options from get_reply_suggestions. Only after the user picked an option (by number, by tapping it on screen, or by repeating its words) in a NEW reply. Picking an option counts as confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          approval_id: { type: 'string' },
+          option: { type: 'number', description: '1, 2 or 3' },
+          edited_text: { type: 'string', description: 'Optional: the final text if the user asked to change the option.' }
+        },
+        required: ['approval_id', 'option']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_pending_approvals',
       description: 'List incoming messages that have AI reply suggestions waiting for the user\'s approval.',
       parameters: { type: 'object', properties: {} }
@@ -150,36 +177,60 @@ const TOOLS = [
   }
 ]
 
+function urduScript (cfg) {
+  if (cfg.ttsUrdu) return 'Urdu script (اردو)'
+  if (cfg.ttsHindi) return 'Devanagari script (simple everyday Hindustani that sounds like Urdu when spoken)'
+  return 'Roman Urdu (Latin letters)'
+}
+
+function languageRule (cfg) {
+  const ur = urduScript(cfg)
+  if (cfg.assistantLanguage === 'ur') return `Always reply in Urdu, written in ${ur}.`
+  if (cfg.assistantLanguage === 'en') return 'Always reply in English, even if the user speaks Urdu.'
+  return `Reply in the language of the user's latest message: if they spoke Urdu/Hindi (it may arrive in Urdu script, Devanagari or Roman Urdu), reply in Urdu written in ${ur}; if they spoke English, reply in English. If unclear, use the language of your previous reply.`
+}
+
 function systemPrompt (cfg) {
   const name = String(cfg.ownerName || 'Hasaan').split(',')[0].trim() || 'Hasaan'
   const now = formatTime(Date.now(), cfg.tzOffsetMin)
   return `You are ${name}'s personal voice assistant, running on his phone and connected to his WhatsApp. It is now ${now}.
-Everything you write is spoken aloud by text-to-speech, so:
-- Reply in short, natural spoken English (1 to 4 sentences). No lists, markdown, emojis or links.
-- Say phone numbers as "ending in" plus the last 4 digits unless asked for the full number.
-- Summarise; don't read long messages word for word unless asked. Messages may be in Urdu or Roman Urdu; explain them in English.
+Your words are spoken aloud and also shown on screen, so:
+- ${languageRule(cfg)}
+- Be short and natural: 1 to 3 sentences. No markdown, lists, emojis or links.
+- The user's words come from speech recognition and can contain mistakes or mixed Urdu/English; work out what they meant.
+- Say phone numbers as "ending in" plus the last 4 digits.
+- Numbered options (contacts, reply options) are shown on screen. Don't read long lists aloud: say how many there are and the names or a short version, then ask which number. The user may answer "number 2", "dusra wala", "the second one", say a name, or tap an option (it arrives as "Option 2").
 
-What you can do with tools: read recent WhatsApp messages and summarise them, say what is important, find a contact, and send a WhatsApp message.
+Tools: read and summarise recent WhatsApp messages, find contacts, write a new message, reply to a received message.
 
-Sending a message — follow these steps exactly:
-1. Call find_contact with the name.
-2. If there is exactly one strong match on WhatsApp, use it. If there are several, read them out briefly (name and last 4 digits) and ask which one. If none are on WhatsApp or none match, say so.
-3. Call prepare_message with the chosen ref and the message text. Keep the user's words; fix only obvious speech-to-text mistakes. If the user didn't say what to write, ask them first.
-4. Read it back: "Should I send '<text>' to <name>?" and wait.
-5. Only when the user confirms in a NEW reply, call send_prepared_message. If they say no, call cancel_prepared_message. Never say a message was sent unless send_prepared_message returned ok.
+Sending a NEW message:
+1. find_contact. If exactly one strong match on WhatsApp, use it; if several, ask which number; if none, say so.
+2. prepare_message with the user's words (fix only obvious speech-recognition errors; if they didn't say what to write, ask first). Write it in the language and script the user would use in a WhatsApp chat (Roman Urdu if they spoke Urdu, unless they ask otherwise).
+3. Ask "Should I send it?" — the text is shown on screen.
+4. Only after a clear yes in a NEW reply (yes, haan, bhej do, send, Send button) call send_prepared_message. If no, cancel_prepared_message.
 
-When you need an answer from the user, end your reply with a question. When the task is done, end with a short statement, not a question.`
+Replying to a received message:
+1. get_reply_suggestions (with the chat name, or empty for the latest message). Briefly say who wrote and what about, and that 3 options are on screen; ask which number.
+2. When the user picks one in a NEW reply, call send_suggestion. If they want changes, pass edited_text.
+
+Never say something was sent unless the tool returned ok. When you need an answer, end with a question; when done, end with a short statement.`
+}
+
+export function detectLang (text) {
+  if (/[؀-ۿ]/.test(text)) return 'ur'
+  if (/[ऀ-ॿ]/.test(text)) return 'hi'
+  return 'en'
 }
 
 // ------------------------------------------------------------------ agent
 
-export function createAgent ({ groq, store, getContacts, wa, config, getApprovals, log }) {
+export function createAgent ({ groq, store, getContacts, wa, config, getApprovals, getSuggestions, sendSuggestion, log }) {
   const sessions = new Map()
 
   function session (id) {
     let s = sessions.get(id)
     if (!s || Date.now() - s.lastAt > SESSION_IDLE_MS) {
-      s = { history: [], turn: 0, staged: new Map(), lastAt: Date.now(), refs: new Map(), seq: 0 }
+      s = { history: [], turn: 0, staged: new Map(), lastAt: Date.now(), refs: new Map(), seq: 0, presented: new Map(), ui: null }
       sessions.set(id, s)
     }
     for (const [k, v] of sessions) if (Date.now() - v.lastAt > SESSION_IDLE_MS && k !== id) sessions.delete(k)
@@ -205,6 +256,11 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
         if (!list.length) return { messages: [], note: args.chat ? `No messages from "${args.chat}" in the last ${hours} hours.` : `No messages in the last ${hours} hours.` }
         const lines = list.map((m) => `${formatTime(m.time, tz)} | ${m.chatName}${m.isGroup ? ' (group)' : ''} | ${m.fromMe ? 'You' : m.sender}: ${String(m.text).slice(0, 300)}`)
         const chats = new Set(list.map((m) => m.chatName))
+        s.ui = {
+          type: 'messages',
+          title: args.chat ? `Messages: ${args.chat}` : 'Latest messages',
+          items: list.slice(-20).reverse().map((m) => ({ chat: m.chatName + (m.isGroup ? ' (group)' : ''), sender: m.fromMe ? 'You' : m.sender, text: String(m.text).slice(0, 200), time: formatTime(m.time, tz) }))
+        }
         return { count: list.length, chats: chats.size, messages: lines }
       }
 
@@ -237,14 +293,30 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
         if (toCheck.length && wa.connected()) {
           try { checked = await wa.onWhatsApp(toCheck) } catch (e) { log('onWhatsApp failed: ' + e.message) }
         }
-        const candidates = top.map((c) => {
+        const candidates = top.map((c, i) => {
           let jid = c.jid
           let onWa = !!jid
           if (!jid && checked.has(c.number)) { const r = checked.get(c.number); onWa = r.exists; jid = r.exists ? r.jid : null }
           const ref = 'c' + (++s.seq)
           if (jid) s.refs.set(ref, { jid, name: c.name, number: c.number })
-          return { ref: jid ? ref : null, name: c.name, number_ends_with: c.number ? c.number.slice(-4) : '', full_number: c.number ? '+' + c.number : '', on_whatsapp: onWa, source: c.source, match: c.score >= 85 ? 'strong' : c.score >= 60 ? 'good' : 'weak' }
+          const last = jid ? store.recent({ hours: 24 * 30, limit: 1, chatFilter: (m) => m.chatJid === jid }).pop() : null
+          return {
+            option: i + 1,
+            ref: jid ? ref : null,
+            name: c.name,
+            number_ends_with: c.number ? c.number.slice(-4) : '',
+            full_number: c.number ? '+' + c.number : '',
+            on_whatsapp: onWa,
+            source: c.source,
+            match: c.score >= 85 ? 'strong' : c.score >= 60 ? 'good' : 'weak',
+            last_message: last ? `${last.fromMe ? 'You' : last.sender}: ${String(last.text).slice(0, 80)} (${formatTime(last.time, tz)})` : ''
+          }
         })
+        s.ui = {
+          type: 'contacts',
+          title: `People named "${q}"`,
+          items: candidates.map((c) => ({ option: c.option, name: c.name, detail: (c.full_number || '') + (c.on_whatsapp ? '' : ' · not on WhatsApp'), preview: c.last_message, enabled: !!c.ref }))
+        }
         return { candidates }
       }
 
@@ -255,6 +327,7 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
         if (!text) return { error: 'Message text is empty. Ask the user what to write.' }
         const id = 'p' + (++s.seq)
         s.staged.set(id, { ...target, name: args.name || target.name, text, turn: s.turn })
+        s.ui = { type: 'confirm', title: `To ${args.name || target.name}`, detail: target.number ? '+' + target.number : '', text }
         return { pending_id: id, to: args.name || target.name, number_ends_with: target.number ? target.number.slice(-4) : '', text, next: 'Read this back to the user and ask them to confirm.' }
       }
 
@@ -265,12 +338,41 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
         if (!wa.connected()) return { error: 'WhatsApp is not connected right now, so the message was not sent.' }
         await wa.sendText(p.jid, p.text)
         s.staged.delete(String(args.pending_id))
+        s.ui = { type: 'done', title: `Sent to ${p.name}`, text: p.text }
         return { ok: true, sent_to: p.name }
       }
 
       case 'cancel_prepared_message': {
         s.staged.delete(String(args.pending_id || ''))
         return { ok: true }
+      }
+
+      case 'get_reply_suggestions': {
+        const r = await getSuggestions(String(args.chat || ''))
+        if (r.error) return { error: r.error }
+        const a = r.item
+        s.presented.set(a.id, { turn: s.turn, item: a })
+        s.ui = {
+          type: 'replies',
+          title: `Reply to ${a.chatName}`,
+          detail: `${a.sender}: ${a.text}`,
+          items: a.suggestions.map((t, i) => ({ option: i + 1, name: t, enabled: true }))
+        }
+        return { approval_id: a.id, from: a.sender, chat: a.chatName, message: a.text, options: a.suggestions.map((t, i) => ({ option: i + 1, text: t })) }
+      }
+
+      case 'send_suggestion': {
+        const p = s.presented.get(String(args.approval_id || ''))
+        if (!p) return { error: 'Unknown approval_id. Call get_reply_suggestions first.' }
+        if (p.turn >= s.turn) return { error: 'The user has not picked an option yet. Ask which number.' }
+        const idx = Math.round(Number(args.option)) - 1
+        const text = String(args.edited_text || p.item.suggestions[idx] || '').trim()
+        if (!text) return { error: 'No such option.' }
+        if (!wa.connected()) return { error: 'WhatsApp is not connected right now, so the reply was not sent.' }
+        await sendSuggestion(p.item, text)
+        s.presented.delete(p.item.id)
+        s.ui = { type: 'done', title: `Sent to ${p.item.chatName}`, text }
+        return { ok: true, sent_to: p.item.chatName, text }
       }
 
       case 'get_pending_approvals': {
@@ -288,7 +390,8 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
     const s = session(String(sessionId))
     s.lastAt = Date.now()
     s.turn++
-    if (!config.groqKey) return { text: 'Please add your Groq API key in the app settings first.', listen: false }
+    s.ui = null
+    if (!config.groqKey) return { text: 'Please add your Groq API key in the app settings first.', listen: false, lang: 'en' }
     s.history.push({ role: 'user', content: String(userText).slice(0, 2000) })
     if (s.history.length > 24) s.history = s.history.slice(-24)
 
@@ -307,13 +410,14 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
       } catch (e) {
         log('Agent Groq call failed: ' + e.message)
         s.history.pop()
-        return { text: e.status === 401 ? 'Your Groq API key was rejected. Please check it in settings.' : 'Sorry, I could not reach the AI service. Please try again.', listen: false }
+        return { text: e.status === 401 ? 'Your Groq API key was rejected. Please check it in settings.' : 'Sorry, I could not reach the AI service. Please try again.', listen: false, lang: 'en' }
       }
       const calls = msg.tool_calls || []
       if (!calls.length) {
         const text = String(msg.content || '').replace(/[*_#`]/g, '').trim() || 'Sorry, I did not get that.'
         s.history.push({ role: 'assistant', content: text })
-        return { text, listen: text.endsWith('?') || s.staged.size > 0 }
+        const asks = /[?؟]\s*$/.test(text) || s.staged.size > 0 || (s.ui && ['contacts', 'replies', 'confirm'].includes(s.ui.type))
+        return { text, listen: !!asks, ui: s.ui, lang: detectLang(text) }
       }
       s.history.push({ role: 'assistant', content: msg.content || '', tool_calls: calls })
       for (const call of calls) {
@@ -324,7 +428,7 @@ export function createAgent ({ groq, store, getContacts, wa, config, getApproval
         s.history.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result).slice(0, 12000) })
       }
     }
-    return { text: 'Sorry, that took too many steps. Please try asking in a simpler way.', listen: false }
+    return { text: 'Sorry, that took too many steps. Please try asking in a simpler way.', listen: false, ui: s.ui, lang: 'en' }
   }
 
   return { handle }

@@ -113,6 +113,15 @@
                     android:text="Try: “Assistant” … “What are my latest messages?” or “Message Sumaya that I'll call her at 6”. The wake word is detected on the phone; only what you say after it is sent for speech recognition." />
 
                 <com.google.android.material.button.MaterialButton
+                    android:id="@+id/overlay_btn"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Allow assistant to appear on screen"
+                    android:visibility="gone" />
+
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/talk_now"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

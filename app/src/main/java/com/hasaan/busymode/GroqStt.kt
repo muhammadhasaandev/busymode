@@ -28,7 +28,7 @@ object GroqStt {
     }
 
     /** Returns the transcript (may be empty). Runs network I/O: call off the main thread. */
-    fun transcribe(apiKey: String, wavBytes: ByteArray, prompt: String): String {
+    fun transcribe(apiKey: String, wavBytes: ByteArray, prompt: String, language: String = ""): String {
         val boundary = "----busymode${System.nanoTime()}"
         val body = ByteArrayOutputStream()
         val out = DataOutputStream(body)
@@ -40,6 +40,7 @@ object GroqStt {
         field("response_format", "json")
         field("temperature", "0")
         if (prompt.isNotBlank()) field("prompt", prompt.take(400))
+        if (language.isNotBlank()) field("language", language)
         out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
         out.write(wavBytes); out.writeBytes("\r\n--$boundary--\r\n")
         out.flush()

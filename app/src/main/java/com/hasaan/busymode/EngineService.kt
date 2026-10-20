@@ -46,11 +46,19 @@ class EngineService : Service(), NodeEngine.Listener {
                 setReferenceCounted(false)
                 acquire()
             }
-        speaker = Speaker(this)
-        voice = VoiceAssistant(this, settings, speaker) { session, text ->
-            sendContacts(force = false)
-            NodeEngine.voice(session, text)
+        speaker = Speaker(this) {
+            // Tell the assistant which voices exist, so it writes Urdu in a script the phone can speak.
+            Settings.ttsUrdu = speaker.urduOk
+            Settings.ttsHindi = speaker.hindiOk
+            NodeEngine.sendConfig(settings)
         }
+        voice = VoiceAssistant(this, settings, speaker,
+            onRequest = { session, text ->
+                sendContacts(force = false)
+                NodeEngine.voice(session, text)
+            },
+            onSessionStart = { showAssistantScreen() }
+        )
         NodeEngine.addListener(this)
         NodeEngine.ensureStarted(this)
     }
@@ -155,8 +163,18 @@ class EngineService : Service(), NodeEngine.Listener {
         ApprovalStore.remove(id)?.let { NotificationManagerCompat.from(this).cancel(it.notificationId) }
     }
 
-    override fun onSay(session: Int, text: String, listen: Boolean) {
-        voice.onReply(session, text, listen)
+    override fun onSay(session: Int, text: String, listen: Boolean, ui: JSONObject?, lang: String) {
+        voice.onReply(session, text, listen, ui, lang)
+    }
+
+    /** Bring up the assistant screen (needs "Display over other apps" when the app is in the background). */
+    private fun showAssistantScreen() {
+        val i = Intent(this, AssistantActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { startActivity(i) } catch (e: Exception) { Log.i(TAG, "Assistant screen not allowed: ${e.message}") }
+        if (Build.VERSION.SDK_INT >= 29 && !android.provider.Settings.canDrawOverlays(this)) {
+            val pi = PendingIntent.getActivity(this, 7, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            notifyAlert("Assistant is listening", "Tap to see the assistant screen", NOTIF_VOICE, pi)
+        }
     }
 
     override fun onError(message: String) {

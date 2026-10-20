@@ -43,6 +43,22 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("voice_wake", false)
         set(v) = prefs.edit().putBoolean("voice_wake", v).apply()
 
+    /** "auto" = answer in the language I speak, "ur" = always Urdu, "en" = always English. */
+    var assistantLanguage: String
+        get() = prefs.getString("assistant_language", "auto")!!
+        set(v) = prefs.edit().putString("assistant_language", v).apply()
+
+    var greeting: String
+        get() = prefs.getString("greeting", "")!!.ifBlank { "Yes ${firstName()}, how can I help you?" }
+        set(v) = prefs.edit().putString("greeting", v.trim()).apply()
+
+    /** Language of the assistant's last answer, used for the next greeting in "auto" mode. */
+    var lastVoiceLang: String
+        get() = prefs.getString("last_voice_lang", "en")!!
+        set(v) = prefs.edit().putString("last_voice_lang", v).apply()
+
+    fun firstName(): String = ownerName.split(',').first().trim().ifBlank { "Hasaan" }
+
     var countryCode: String
         get() = prefs.getString("country_code", "92")!!.ifBlank { "92" }
         set(v) = prefs.edit().putString("country_code", v.filter { it.isDigit() }).apply()
@@ -88,6 +104,9 @@ class Settings(context: Context) {
         put("autoReply", replyMode == "auto")
         put("agentModel", agentModel)
         put("countryCode", countryCode)
+        put("assistantLanguage", assistantLanguage)
+        put("ttsUrdu", ttsUrdu)
+        put("ttsHindi", ttsHindi)
         put("tzOffsetMin", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000)
         put("voiceAlerts", voiceAlerts)
         put("replyCooldownMin", replyCooldownMin)
@@ -108,6 +127,9 @@ class Settings(context: Context) {
     }
 
     companion object {
+        /** Voices available on this phone (filled in when text-to-speech starts). */
+        @Volatile var ttsUrdu = false
+        @Volatile var ttsHindi = false
         const val DEFAULT_REPLY = "Hasaan is busy right now, he will get back to you soon."
         const val DEFAULT_MODEL = "openai/gpt-oss-20b"
         const val DEFAULT_AGENT_MODEL = "openai/gpt-oss-120b"
